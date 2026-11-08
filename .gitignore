@@ -3,9 +3,7 @@
 *.so
 src.zip
 
-# Test binaries (built from tests/snippets/*.c) and test outputs
-tests/snippets/*
-!tests/snippets/*.c
+# Test outputs (test binaries are ignored by tests/snippets/.gitignore)
 *.out
 
 # Python cache
