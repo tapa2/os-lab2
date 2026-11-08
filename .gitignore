@@ -1,0 +1,12 @@
+# Build artifacts
+*.o
+*.so
+src.zip
+
+# Test binaries (built from tests/snippets/*.c) and test outputs
+tests/snippets/*
+!tests/snippets/*.c
+*.out
+
+# Python cache
+__pycache__/
