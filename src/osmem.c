@@ -74,6 +74,26 @@ static struct block_meta *get_last_block(void)
 	return block;
 }
 
+/* Merge every run of neighbouring free blocks into a single free block. */
+static void coalesce_all(void)
+{
+	struct block_meta *block = heap_head;
+	struct block_meta *next;
+
+	while (block && block->next) {
+		next = block->next;
+		if (block->status == STATUS_FREE && next->status == STATUS_FREE) {
+			/* Swallow the next block: its header becomes payload. */
+			block->size += META_SIZE + next->size;
+			block->next = next->next;
+			if (next->next)
+				next->next->prev = block;
+		} else {
+			block = next;
+		}
+	}
+}
+
 /* Best fit: the smallest free block that is still big enough (NULL if none). */
 static struct block_meta *find_best(size_t size)
 {
@@ -135,9 +155,20 @@ static struct block_meta *alloc_on_heap(size_t size)
 	if (!heap_head)
 		preallocate_heap();
 
+	coalesce_all();
+
 	block = find_best(size);
 	if (block) {
 		split_block(block, size);
+		block->status = STATUS_ALLOC;
+		return block;
+	}
+
+	/* No fit: if the last block is free, grow it by only the missing bytes. */
+	block = get_last_block();
+	if (block->status == STATUS_FREE) {
+		grow_heap(size - block->size);
+		block->size = size;
 		block->status = STATUS_ALLOC;
 		return block;
 	}
