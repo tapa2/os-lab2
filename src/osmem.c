@@ -89,6 +89,29 @@ static struct block_meta *find_best(size_t size)
 	return best;
 }
 
+/*
+ * Cut the unused tail of a block into a new free block. Done only if the tail
+ * can hold a header plus at least one aligned byte of payload.
+ */
+static void split_block(struct block_meta *block, size_t size)
+{
+	struct block_meta *rest;
+
+	if (block->size < size + META_SIZE + ALIGN(1))
+		return;
+
+	rest = (struct block_meta *)((char *)block + META_SIZE + size);
+	rest->size = block->size - size - META_SIZE;
+	rest->status = STATUS_FREE;
+	rest->prev = block;
+	rest->next = block->next;
+
+	if (block->next)
+		block->next->prev = rest;
+	block->next = rest;
+	block->size = size;
+}
+
 /* Create a new allocated block at the end of the heap. */
 static struct block_meta *append_block(size_t size)
 {
@@ -114,6 +137,7 @@ static struct block_meta *alloc_on_heap(size_t size)
 
 	block = find_best(size);
 	if (block) {
+		split_block(block, size);
 		block->status = STATUS_ALLOC;
 		return block;
 	}
