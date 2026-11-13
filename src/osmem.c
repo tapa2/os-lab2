@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+#include <stdint.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include "osmem.h"
@@ -176,17 +178,26 @@ static struct block_meta *alloc_on_heap(size_t size)
 	return append_block(size);
 }
 
-void *os_malloc(size_t size)
+/*
+ * Common part of malloc and calloc: blocks of at least `threshold` bytes
+ * (header included) are mapped, smaller ones go to the heap.
+ */
+static void *alloc_memory(size_t size, size_t threshold)
 {
 	if (size == 0)
 		return NULL;
 
 	size = ALIGN(size);
 
-	if (META_SIZE + size >= MMAP_THRESHOLD)
+	if (META_SIZE + size >= threshold)
 		return get_payload(alloc_mapped(size));
 
 	return get_payload(alloc_on_heap(size));
+}
+
+void *os_malloc(size_t size)
+{
+	return alloc_memory(size, MMAP_THRESHOLD);
 }
 
 void os_free(void *ptr)
@@ -210,10 +221,21 @@ void os_free(void *ptr)
 
 void *os_calloc(size_t nmemb, size_t size)
 {
-	/* TODO: Implement os_calloc */
-	(void)nmemb;
-	(void)size;
-	return NULL;
+	size_t total;
+	void *ptr;
+
+	/* nmemb * size must not overflow size_t. */
+	if (size != 0 && nmemb > SIZE_MAX / size)
+		return NULL;
+
+	total = nmemb * size;
+
+	/* calloc switches to mmap() already at one page. */
+	ptr = alloc_memory(total, getpagesize());
+	if (ptr)
+		memset(ptr, 0, total);
+
+	return ptr;
 }
 
 void *os_realloc(void *ptr, size_t size)
