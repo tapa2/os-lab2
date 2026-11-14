@@ -9,7 +9,7 @@
 
 /* Every address we hand out (and every header) is a multiple of 8. */
 #define ALIGNMENT		8
-#define ALIGN(size)		(((size) + (ALIGNMENT - 1)) & ~(ALIGNMENT - 1))
+#define ALIGN(size)	(((size) + (ALIGNMENT - 1)) & ~(ALIGNMENT - 1))
 
 /* Header size, rounded up so the payload after it stays aligned. */
 #define META_SIZE		ALIGN(sizeof(struct block_meta))
@@ -17,7 +17,7 @@
 /* Blocks of at least this many bytes (header included) go to mmap(). */
 #define MMAP_THRESHOLD		(128 * 1024)
 
-/* First block of the heap list (NULL until the heap is used for the first time). */
+/* First block of the heap list (NULL until the heap is first used). */
 static struct block_meta *heap_head;
 
 /* Header address <-> payload address. */
@@ -31,7 +31,7 @@ static struct block_meta *get_block(void *ptr)
 	return (struct block_meta *)((char *)ptr - META_SIZE);
 }
 
-/* Map a separate memory zone for one block; size is the aligned payload size. */
+/* Map a separate memory zone for one block (size = aligned payload). */
 static struct block_meta *alloc_mapped(size_t size)
 {
 	struct block_meta *block;
@@ -48,7 +48,7 @@ static struct block_meta *alloc_mapped(size_t size)
 	return block;
 }
 
-/* Move the program break up by size bytes; returns the start of the new zone. */
+/* Move the program break up by size bytes; return the new zone's start. */
 static void *grow_heap(size_t size)
 {
 	void *old_brk = sbrk(size);
@@ -93,7 +93,8 @@ static void coalesce_all(void)
 	struct block_meta *block = heap_head;
 
 	while (block && block->next) {
-		if (block->status == STATUS_FREE && block->next->status == STATUS_FREE)
+		if (block->status == STATUS_FREE &&
+		    block->next->status == STATUS_FREE)
 			merge_with_next(block);
 		else
 			block = block->next;
@@ -177,7 +178,7 @@ static struct block_meta *alloc_on_heap(size_t size)
 		return block;
 	}
 
-	/* No fit: if the last block is free, grow it by only the missing bytes. */
+	/* No fit: if the last block is free, grow it by the missing bytes. */
 	block = get_last_block();
 	if (block->status == STATUS_FREE) {
 		expand_last_block(block, size);
@@ -218,7 +219,7 @@ static void free_block(struct block_meta *block)
 		ret = munmap(block, META_SIZE + block->size);
 		DIE(ret == -1, "munmap");
 	} else {
-		/* Heap memory is never given back to the OS, only marked for reuse. */
+		/* Heap memory is never given back to the OS, only reused. */
 		block->status = STATUS_FREE;
 	}
 }
@@ -250,7 +251,7 @@ void *os_calloc(size_t nmemb, size_t size)
 	return ptr;
 }
 
-/* Realloc fallback: allocate a new block, copy the data, release the old one. */
+/* Realloc fallback: new block, copy the data, release the old block. */
 static void *move_block(struct block_meta *block, size_t size)
 {
 	void *new_ptr = alloc_memory(size, MMAP_THRESHOLD);
@@ -299,7 +300,8 @@ void *os_realloc(void *ptr, size_t size)
 	size = ALIGN(size);
 
 	/* Mapped blocks, or blocks that become big, always move. */
-	if (block->status == STATUS_MAPPED || META_SIZE + size >= MMAP_THRESHOLD)
+	if (block->status == STATUS_MAPPED ||
+	    META_SIZE + size >= MMAP_THRESHOLD)
 		return move_block(block, size);
 
 	/* Shrink (or same size): stay in place, give the tail back. */
