@@ -76,23 +76,27 @@ static struct block_meta *get_last_block(void)
 	return block;
 }
 
+/* Swallow the next block: its header and payload become part of this block. */
+static void merge_with_next(struct block_meta *block)
+{
+	struct block_meta *next = block->next;
+
+	block->size += META_SIZE + next->size;
+	block->next = next->next;
+	if (next->next)
+		next->next->prev = block;
+}
+
 /* Merge every run of neighbouring free blocks into a single free block. */
 static void coalesce_all(void)
 {
 	struct block_meta *block = heap_head;
-	struct block_meta *next;
 
 	while (block && block->next) {
-		next = block->next;
-		if (block->status == STATUS_FREE && next->status == STATUS_FREE) {
-			/* Swallow the next block: its header becomes payload. */
-			block->size += META_SIZE + next->size;
-			block->next = next->next;
-			if (next->next)
-				next->next->prev = block;
-		} else {
-			block = next;
-		}
+		if (block->status == STATUS_FREE && block->next->status == STATUS_FREE)
+			merge_with_next(block);
+		else
+			block = block->next;
 	}
 }
 
@@ -134,6 +138,13 @@ static void split_block(struct block_meta *block, size_t size)
 	block->size = size;
 }
 
+/* Grow the LAST heap block to `size` by moving the program break. */
+static void expand_last_block(struct block_meta *block, size_t size)
+{
+	grow_heap(size - block->size);
+	block->size = size;
+}
+
 /* Create a new allocated block at the end of the heap. */
 static struct block_meta *append_block(size_t size)
 {
@@ -169,8 +180,7 @@ static struct block_meta *alloc_on_heap(size_t size)
 	/* No fit: if the last block is free, grow it by only the missing bytes. */
 	block = get_last_block();
 	if (block->status == STATUS_FREE) {
-		grow_heap(size - block->size);
-		block->size = size;
+		expand_last_block(block, size);
 		block->status = STATUS_ALLOC;
 		return block;
 	}
@@ -200,15 +210,9 @@ void *os_malloc(size_t size)
 	return alloc_memory(size, MMAP_THRESHOLD);
 }
 
-void os_free(void *ptr)
+static void free_block(struct block_meta *block)
 {
-	struct block_meta *block;
 	int ret;
-
-	if (!ptr)
-		return;
-
-	block = get_block(ptr);
 
 	if (block->status == STATUS_MAPPED) {
 		ret = munmap(block, META_SIZE + block->size);
@@ -217,6 +221,14 @@ void os_free(void *ptr)
 		/* Heap memory is never given back to the OS, only marked for reuse. */
 		block->status = STATUS_FREE;
 	}
+}
+
+void os_free(void *ptr)
+{
+	if (!ptr)
+		return;
+
+	free_block(get_block(ptr));
 }
 
 void *os_calloc(size_t nmemb, size_t size)
@@ -238,10 +250,72 @@ void *os_calloc(size_t nmemb, size_t size)
 	return ptr;
 }
 
+/* Realloc fallback: allocate a new block, copy the data, release the old one. */
+static void *move_block(struct block_meta *block, size_t size)
+{
+	void *new_ptr = alloc_memory(size, MMAP_THRESHOLD);
+	size_t copy = block->size < size ? block->size : size;
+
+	memcpy(new_ptr, get_payload(block), copy);
+	free_block(block);
+
+	return new_ptr;
+}
+
+/*
+ * Grow a heap block in place by swallowing the free blocks after it, one at
+ * a time. Returns 1 on success. Merged blocks stay merged even on failure.
+ */
+static int grow_in_place(struct block_meta *block, size_t size)
+{
+	while (block->next && block->next->status == STATUS_FREE) {
+		merge_with_next(block);
+		if (block->size >= size) {
+			split_block(block, size);
+			return 1;
+		}
+	}
+	return 0;
+}
+
 void *os_realloc(void *ptr, size_t size)
 {
-	/* TODO: Implement os_realloc */
-	(void)ptr;
-	(void)size;
-	return NULL;
+	struct block_meta *block;
+
+	if (!ptr)
+		return alloc_memory(size, MMAP_THRESHOLD);
+
+	block = get_block(ptr);
+
+	if (size == 0) {
+		free_block(block);
+		return NULL;
+	}
+
+	/* Reallocating an already freed block is a user error. */
+	if (block->status == STATUS_FREE)
+		return NULL;
+
+	size = ALIGN(size);
+
+	/* Mapped blocks, or blocks that become big, always move. */
+	if (block->status == STATUS_MAPPED || META_SIZE + size >= MMAP_THRESHOLD)
+		return move_block(block, size);
+
+	/* Shrink (or same size): stay in place, give the tail back. */
+	if (size <= block->size) {
+		split_block(block, size);
+		return ptr;
+	}
+
+	/* The last block can simply grow at the end of the heap. */
+	if (!block->next) {
+		expand_last_block(block, size);
+		return ptr;
+	}
+
+	if (grow_in_place(block, size))
+		return ptr;
+
+	return move_block(block, size);
 }
